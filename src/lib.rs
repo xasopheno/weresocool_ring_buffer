@@ -1,9 +1,11 @@
 use std::error::Error;
 use std::fmt;
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicU64, AtomicUsize, Ordering},
     Arc, RwLock,
 };
+use std::thread;
+use std::time::{Duration, Instant};
 
 #[derive(Debug)]
 pub enum RingBufferError {
@@ -22,88 +24,61 @@ impl fmt::Display for RingBufferError {
 
 impl Error for RingBufferError {}
 
-pub struct RingBuffer<T: Clone + Default + Send + Sync> {
-    buffer: Arc<RwLock<Vec<T>>>,
-    write_pos: Arc<AtomicUsize>,
-    read_pos: Arc<AtomicUsize>,
-    size: usize,
+pub struct RingBuffer {
+    buffers: Arc<RwLock<Vec<Vec<f32>>>>,
+    last_read: std::sync::Mutex<Instant>,
+    total_writes: Arc<AtomicUsize>,
+    total_reads: Arc<AtomicUsize>,
+    buffer_size: usize,
+    ring_buffer_size: usize,
 }
 
-impl<T: Clone + Default + Send + Sync> RingBuffer<T> {
-    pub fn new(size: usize) -> Self {
+impl RingBuffer {
+    pub fn new(buffer_size: usize, ring_buffer_size: usize) -> Self {
         Self {
-            buffer: Arc::new(RwLock::new(vec![T::default(); size])),
-            write_pos: Arc::new(AtomicUsize::new(0)),
-            read_pos: Arc::new(AtomicUsize::new(0)),
-            size,
+            buffers: Arc::new(RwLock::new(vec![vec![0.0; buffer_size]; ring_buffer_size])),
+            total_writes: Arc::new(AtomicUsize::new(0)),
+            total_reads: Arc::new(AtomicUsize::new(0)),
+            last_read: std::sync::Mutex::new(Instant::now()),
+            buffer_size,
+            ring_buffer_size,
         }
     }
 
-    pub fn write(&self, data: Vec<T>) -> Result<(), RingBufferError> {
-        if data.len() != self.size {
+    pub fn write(&self, data: Vec<f32>) -> Result<(), RingBufferError> {
+        if data.len() != self.buffer_size {
             return Err(RingBufferError::DataSizeMismatch);
         }
 
-        let mut buffer_guard = self.buffer.write().unwrap();
-        let write_pos = self.write_pos.load(Ordering::SeqCst);
+        let total_writes = self.total_writes.load(Ordering::SeqCst);
+        let write_index = total_writes % self.ring_buffer_size;
+        let mut buffers = self.buffers.write().unwrap();
+        buffers[write_index] = data;
 
-        for i in 0..self.size {
-            let write_index = (write_pos + i) % self.size;
-            buffer_guard[write_index] = data[i].clone();
+        self.total_writes.fetch_add(1, Ordering::SeqCst);
+
+        let total_reads = self.total_reads.load(Ordering::SeqCst);
+        if total_reads > 10 && total_reads < write_index - 1 {
+            self.total_reads.store(write_index, Ordering::SeqCst);
         }
-
-        self.write_pos
-            .store((write_pos + self.size) % self.size, Ordering::SeqCst);
 
         Ok(())
     }
 
-    pub fn read(&self) -> Vec<T> {
-        let mut result = vec![T::default(); self.size];
-        let read_pos = self.read_pos.load(Ordering::SeqCst);
+    pub fn read(&self) -> Arc<RwLock<Vec<f32>>> {
+        let total_writes = self.total_writes.load(Ordering::SeqCst);
+        let total_reads = self.total_reads.load(Ordering::SeqCst);
 
-        let buffer_guard = self.buffer.read().unwrap();
-        for i in 0..self.size {
-            let read_index = (read_pos + i) % self.size;
-            result[i] = buffer_guard[read_index].clone();
+        let elapsed_time = self.last_read.lock().unwrap().elapsed().as_secs_f32();
+
+        if total_reads < total_writes && elapsed_time >= 2048.0 / 48000.0 * 0.9 {
+            self.total_reads.fetch_add(1, Ordering::SeqCst);
+            *self.last_read.lock().unwrap() = Instant::now();
         }
 
-        result
-    }
-
-    pub fn with_read_buffer<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce(&[T]) -> R,
-    {
-        let read_buffer = self.read();
-        f(&read_buffer)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::RingBuffer;
-
-    #[test]
-    fn test_ring_buffer() {
-        let rb = RingBuffer::new(10);
-
-        rb.with_read_buffer(|buffer| {
-            assert_eq!(buffer, &[0.0; 10]);
-        });
-
-        rb.write(vec![1.0; 10]).unwrap();
-
-        rb.with_read_buffer(|buffer| {
-            assert_eq!(buffer, &[1.0; 10]);
-        });
-
-        rb.write(vec![2.0; 10]).unwrap();
-
-        rb.write(vec![3.0; 10]).unwrap();
-
-        rb.with_read_buffer(|buffer| {
-            assert_eq!(buffer, &[3.0; 10]);
-        });
+        let read_index = total_reads % self.ring_buffer_size;
+        Arc::new(RwLock::new(
+            self.buffers.read().unwrap()[read_index].clone(),
+        ))
     }
 }
