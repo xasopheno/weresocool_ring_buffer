@@ -31,10 +31,11 @@ pub struct RingBuffer {
     total_reads: Arc<AtomicUsize>,
     buffer_size: usize,
     ring_buffer_size: usize,
+    sample_rate: f32,
 }
 
 impl RingBuffer {
-    pub fn new(buffer_size: usize, ring_buffer_size: usize) -> Self {
+    pub fn new(buffer_size: usize, ring_buffer_size: usize, sample_rate: usize) -> Self {
         Self {
             buffers: Arc::new(RwLock::new(vec![vec![0.0; buffer_size]; ring_buffer_size])),
             total_writes: Arc::new(AtomicUsize::new(0)),
@@ -42,6 +43,7 @@ impl RingBuffer {
             last_read: std::sync::Mutex::new(Instant::now()),
             buffer_size,
             ring_buffer_size,
+            sample_rate: sample_rate as f32,
         }
     }
 
@@ -71,7 +73,9 @@ impl RingBuffer {
 
         let elapsed_time = self.last_read.lock().unwrap().elapsed().as_secs_f32();
 
-        if total_reads < total_writes && elapsed_time >= 2048.0 / 48000.0 * 0.9 {
+        if total_reads < total_writes
+            && elapsed_time >= self.buffer_size as f32 / self.sample_rate * 0.9
+        {
             self.total_reads.fetch_add(1, Ordering::SeqCst);
             *self.last_read.lock().unwrap() = Instant::now();
         }
