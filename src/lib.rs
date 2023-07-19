@@ -1,11 +1,10 @@
 use std::error::Error;
 use std::fmt;
 use std::sync::{
-    atomic::{AtomicU64, AtomicUsize, Ordering},
+    atomic::{AtomicUsize, Ordering},
     Arc, RwLock,
 };
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 #[derive(Debug)]
 pub enum RingBufferError {
