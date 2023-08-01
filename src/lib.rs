@@ -73,6 +73,7 @@ impl RingBuffer {
 
         let old_data =
             self.buffers[write_index].swap(Box::into_raw(Box::new(data)), Ordering::SeqCst);
+
         unsafe {
             _ = Box::from_raw(old_data);
         } // safely drop the old data
@@ -109,8 +110,6 @@ impl RingBuffer {
 
         let read_index = total_reads % self.ring_buffer_size;
         let data_ptr = self.buffers[read_index].load(Ordering::SeqCst);
-        let data = unsafe { &*data_ptr }.clone();
-
-        data
+        unsafe { &*data_ptr }.clone()
     }
 }
